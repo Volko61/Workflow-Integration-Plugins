@@ -731,10 +731,8 @@ async function startRecording(event, options) {
                 let audioDevice = options.audioDevice || await getBestAudioDevice();
                 let cameraCommand;
                 if (audioDevice) {
-                    // Get the correct device name (with fallback to alternative name)
-                    audioDevice = await getCorrectAudioDeviceName(audioDevice);
-                    // Include both video and audio
-                    cameraCommand = `${getFFmpegPath()} -f dshow -framerate 60 -i video="${cleanCameraName}" -f dshow -i audio="${audioDevice.replace(/\\/g, '\\\\')}" -c:v libx264 -preset ultrafast -crf 22 -pix_fmt yuv420p -c:a aac -b:a 128k -flush_packets 1 -vf scale=${options.resolution || '1920x1080'} "${outputPath}"`;
+                    // Use the display name for shell execution compatibility
+                    cameraCommand = `${getFFmpegPath()} -f dshow -framerate 60 -i video="${cleanCameraName}" -f dshow -i audio="${audioDevice}" -c:v libx264 -preset ultrafast -crf 22 -pix_fmt yuv420p -c:a aac -b:a 128k -flush_packets 1 -vf scale=${options.resolution || '1920x1080'} "${outputPath}"`;
                     debugLog(`OBS Virtual Camera with audio (${audioDevice}): ${cameraCommand}`);
                 } else {
                     // Video only if no audio device found
