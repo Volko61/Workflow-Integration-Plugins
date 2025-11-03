@@ -253,8 +253,8 @@ async function getBestAudioDevice() {
             debugLog(`Using preferred audio device: ${preferredDevice.name}`);
         }
 
-        // Return the most reliable name (alternative if available, otherwise the display name)
-        return preferredDevice.altName || preferredDevice.name;
+        // Return the display name for shell execution compatibility
+        return preferredDevice.name;
     } catch (error) {
         debugLog(`Error getting audio device: ${error.message}`);
         return null;
@@ -579,11 +579,11 @@ async function startRecording(event, options) {
         debugLog(`FFmpeg input argument: "${args[args.length - 1]}"`);
         debugLog(`All FFmpeg args:`, JSON.stringify(args, null, 2));
     } else if (options.sourceType === 'window' && options.windowTitle) {
-        // Use specific window with gdigrab
+        // Use specific window with gdigrab - properly quote the window title for shell execution
         args = [
             '-f', 'gdigrab',
             '-framerate', options.framerate || '30',
-            '-i', `title=${options.windowTitle}`
+            '-i', `title="${options.windowTitle}"`
         ];
         debugLog(`Recording window: ${options.windowTitle}`);
     } else if (region) {
