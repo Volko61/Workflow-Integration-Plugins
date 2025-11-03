@@ -211,11 +211,11 @@ function handleRegionChange() {
     switch (selectedRegion) {
         case 'window':
             windowSelectGroup.style.display = 'block';
-            updateSources();
+            // Don't rescan - just show cached sources
             break;
         case 'camera':
             cameraSelectGroup.style.display = 'block';
-            updateSources();
+            // Don't rescan - just show cached sources
             break;
         case 'selection':
             // Region selection would trigger a screen overlay

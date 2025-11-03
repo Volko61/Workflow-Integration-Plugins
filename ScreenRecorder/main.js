@@ -14,6 +14,7 @@ let recordingProcess = null;
 let isRecording = false;
 let currentRecordingPath = null; // Track the current recording file path
 let originalRecordingPath = null; // Store the original output path for camera recordings
+let timelineAdded = false; // Prevent duplicate timeline additions
 
 // DaVinci Resolve objects
 let resolveObj = null;
@@ -231,7 +232,8 @@ async function getAvailableAudioDevices() {
 // Get the best audio device for recording (prefer microphone, fallback to any audio device)
 async function getBestAudioDevice() {
     try {
-        const devices = await getAvailableAudioDevices();
+        // Use cached audio devices instead of rescanning
+        const devices = availableAudioDevices.length > 0 ? availableAudioDevices : await getAvailableAudioDevices();
         if (devices.length === 0) {
             debugLog('No audio devices found');
             return null;
@@ -262,7 +264,8 @@ async function getBestAudioDevice() {
 // Get the correct audio device name (with fallback to alternative name)
 async function getCorrectAudioDeviceName(displayName) {
     try {
-        const devices = await getAvailableAudioDevices();
+        // Use cached audio devices instead of rescanning
+        const devices = availableAudioDevices.length > 0 ? availableAudioDevices : await getAvailableAudioDevices();
         const deviceInfo = devices.find(device => device.name === displayName);
 
         if (deviceInfo && deviceInfo.altName) {
@@ -282,7 +285,12 @@ async function updateAvailableSources() {
     try {
         availableWindows = await getAvailableWindows();
         availableCameras = await getAvailableCameras();
-        availableAudioDevices = await getAvailableAudioDevices();
+
+        // Only scan audio devices once at startup - cache them for subsequent calls
+        if (availableAudioDevices.length === 0) {
+            availableAudioDevices = await getAvailableAudioDevices();
+            debugLog(`Audio devices scanned and cached: ${availableAudioDevices.length} devices found`);
+        }
 
         if (mainWindow) {
             mainWindow.webContents.send('sources-updated', {
@@ -292,11 +300,12 @@ async function updateAvailableSources() {
             });
         }
 
-        debugLog(`Found ${availableWindows.length} windows, ${availableCameras.length} cameras, and ${availableAudioDevices.length} audio devices`);
+        debugLog(`Found ${availableWindows.length} windows, ${availableCameras.length} cameras, and ${availableAudioDevices.length} cached audio devices`);
     } catch (error) {
         debugLog(`Error updating sources: ${error.message}`);
     }
 }
+
 
 // Setup global shortcuts
 function setupGlobalShortcuts() {
@@ -509,6 +518,9 @@ async function startRecording(event, options) {
 
     ensureRecordingsDir();
 
+    // Reset timeline flag for new recording
+    timelineAdded = false;
+
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const filename = `screen-recording-${timestamp}.mp4`;
     const outputPath = path.join(RECORDINGS_DIR, filename);
@@ -642,41 +654,21 @@ async function startRecording(event, options) {
         recordingProcess.on('close', (code, signal) => {
             debugLog(`Recording process closed with code: ${code}, signal: ${signal}`);
 
-            // Reset state if process was manually stopped or failed
-            const wasManuallyStopped = signal === 'SIGTERM' || signal === 'SIGKILL' ||
-                                    (signal === null && code !== 0 && code !== null) ||
-                                    (signal === null && code === 1); // Windows often uses exit code 1 for terminated processes
+            // Reset state
+            isRecording = false;
+            recordingProcess = null;
+            currentRecordingPath = null;
 
-            if (wasManuallyStopped) {
-                debugLog(`Recording was manually stopped or failed. Code: ${code}, Signal: ${signal}`);
-                isRecording = false;
-                recordingProcess = null;
-                currentRecordingPath = null;
-
-                if (mainWindow) {
-                    addRecordingToTimeline(null, outputPath).then(result => {
-                        mainWindow.webContents.send('recording:completed', {
-                            success: true,
-                            filePath: outputPath,
-                            timelineResult: result
-                        });
+            // Add recording to timeline (single call to avoid duplication)
+            if (mainWindow && !timelineAdded) {
+                timelineAdded = true;
+                addRecordingToTimeline(null, outputPath).then(result => {
+                    mainWindow.webContents.send('recording:completed', {
+                        success: true,
+                        filePath: outputPath,
+                        timelineResult: result
                     });
-                }
-            } else {
-                // Recording completed normally or failed
-                isRecording = false;
-                recordingProcess = null;
-                currentRecordingPath = null;
-
-                if (mainWindow) {
-                    addRecordingToTimeline(null, outputPath).then(result => {
-                        mainWindow.webContents.send('recording:completed', {
-                            success: true,
-                            filePath: outputPath,
-                            timelineResult: result
-                        });
-                    });
-                }
+                });
             }
         });
 
@@ -873,9 +865,10 @@ async function startRecording(event, options) {
                                     debugLog(`Camera recording - not checking file: wasStopped=${wasStopped}, hasFilePath=${!!completedFilePath}`);
                                 }
 
-                                if (isValidRecording) {
+                                if (isValidRecording && !timelineAdded) {
                                     // Valid recording - add to timeline and report success
                                     debugLog(`Camera recording valid - adding to timeline`);
+                                    timelineAdded = true;
                                     addRecordingToTimeline(null, completedFilePath).then(result => {
                                         mainWindow.webContents.send('recording:completed', {
                                             success: true,
@@ -908,7 +901,8 @@ async function startRecording(event, options) {
                                     isRecording = false;
                                     recordingProcess = null;
                                     currentRecordingPath = null;
-                                    if (mainWindow) {
+                                    if (mainWindow && !timelineAdded) {
+                                        timelineAdded = true;
                                         addRecordingToTimeline(null, currentOutputPath).then(result => {
                                             mainWindow.webContents.send('recording:completed', {
                                                 success: true,
@@ -1023,8 +1017,9 @@ async function startRecording(event, options) {
                 isRecording = false;
                 recordingProcess = null;
 
-                if (code === 0 && mainWindow) {
+                if (code === 0 && mainWindow && !timelineAdded) {
                     // Successfully completed recording
+                    timelineAdded = true;
                     addRecordingToTimeline(null, outputPath).then(result => {
                         mainWindow.webContents.send('recording:completed', {
                             success: true,
@@ -1041,7 +1036,8 @@ async function startRecording(event, options) {
                             const stats = fs.statSync(outputPath);
                             if (stats.size > 1024) { // At least 1KB - indicates a valid recording
                                 debugLog(`Recording completed with exit code ${code}, but file is valid (${stats.size} bytes)`);
-                                if (mainWindow) {
+                                if (mainWindow && !timelineAdded) {
+                                    timelineAdded = true;
                                     addRecordingToTimeline(null, outputPath).then(result => {
                                         mainWindow.webContents.send('recording:completed', {
                                             success: true,
@@ -1238,7 +1234,9 @@ async function stopRecording(event) {
                                     }
 
                                     // Add to timeline and report success
-                                    addRecordingToTimeline(null, completedFilePath).then(result => {
+                                    if (!timelineAdded) {
+                                        timelineAdded = true;
+                                        addRecordingToTimeline(null, completedFilePath).then(result => {
                                         if (mainWindow && !mainWindow.isDestroyed()) {
                                             mainWindow.webContents.send('recording:completed', {
                                                 success: true,
@@ -1257,6 +1255,7 @@ async function stopRecording(event) {
                                             });
                                         }
                                     });
+                                    }
                                 } else {
                                     debugLog(`OBS recording file too small: ${stats.size} bytes`);
                                     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1701,7 +1700,7 @@ function registerHandlers() {
     ipcMain.handle('sources:update', updateAvailableSources);
     ipcMain.handle('sources:getWindows', getAvailableWindows);
     ipcMain.handle('sources:getCameras', getAvailableCameras);
-    ipcMain.handle('sources:getAudioDevices', getAvailableAudioDevices);
+    ipcMain.handle('sources:getAudioDevices', () => availableAudioDevices);
 }
 
 app.whenReady().then(() => {
