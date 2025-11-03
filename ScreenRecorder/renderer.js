@@ -5,7 +5,8 @@ let recordingSettings = null;
 let startBtn, stopBtn, statusText, ffmpegStatus, refreshBtn;
 let framerateSelect, resolutionSelect, regionSelect;
 let windowSelect, cameraSelect, audioSelect;
-let windowSelectGroup, cameraSelectGroup;
+let windowSelectGroup, cameraSelectGroup, dualRecordingGroup, cameraDualGroup;
+let recordDualMode, cameraDualSelect;
 
 // Initialize DOM elements
 function initializeDOMElements() {
@@ -22,6 +23,10 @@ function initializeDOMElements() {
     audioSelect = document.getElementById('audioSelect');
     windowSelectGroup = document.getElementById('windowSelectGroup');
     cameraSelectGroup = document.getElementById('cameraSelectGroup');
+    dualRecordingGroup = document.getElementById('dualRecordingGroup');
+    cameraDualGroup = document.getElementById('cameraDualGroup');
+    recordDualMode = document.getElementById('recordDualMode');
+    cameraDualSelect = document.getElementById('cameraDualSelect');
 }
 
 // Initialize
@@ -67,6 +72,9 @@ async function init() {
         // Setup region change listener
         regionSelect.addEventListener('change', handleRegionChange);
 
+        // Setup dual mode change listener
+        recordDualMode.addEventListener('change', handleDualModeChange);
+
         // Initial sources update
         await updateSources();
 
@@ -82,22 +90,46 @@ async function handleRecordingCompleted(data) {
         isRecording = false;
         updateRecordingUI();
 
-        if (data.timelineResult && data.timelineResult.success) {
-            if (data.timelineResult.createdNewTimeline) {
-                statusText.textContent = `✅ Recording added to new timeline: ${data.timelineResult.timelineName}`;
-            } else {
-                statusText.textContent = `✅ Recording added to existing timeline: ${data.timelineResult.timelineName}`;
-            }
-            statusText.style.color = 'green';
-        } else {
-            // Timeline integration failed, show manual instructions
-            const fileName = data.filePath ? data.filePath.split(/[\\\/]/).pop() : 'Unknown file';
-            statusText.textContent = `⚠️ Timeline integration failed - see manual instructions`;
-            statusText.style.color = 'orange';
+        if (data.dualRecording) {
+            // Handle dual recording completion
+            if (data.timelineResult && data.timelineResult.success) {
+                statusText.textContent = `✅ Dual recording added to timeline (screen on track 1, camera on track 2)`;
+                statusText.style.color = 'green';
 
-            const timelineError = data.timelineResult ? data.timelineResult.error : 'Unknown error';
-            const fileLocation = data.filePath || 'Unknown location';
-            alert(`⚠️ Automatic timeline integration failed: ${timelineError}\n\nManual import required:\n\nFile location: ${fileLocation}\n\nIn DaVinci Resolve, you can:\n1. Go to Media Pool\n2. Right-click and import media\n3. Navigate to the recordings folder\n4. Select "${fileName}"\n5. Drag it to your timeline`);
+                const screenFileName = data.filePath ? data.filePath.split(/[\\\/]/).pop() : 'Unknown screen file';
+                const cameraFileName = data.cameraPath ? data.cameraPath.split(/[\\\/]/).pop() : 'Unknown camera file';
+                console.log(`Dual recording completed: Screen="${screenFileName}", Camera="${cameraFileName}"`);
+            } else {
+                // Timeline integration failed for dual recording
+                const screenFileName = data.filePath ? data.filePath.split(/[\\\/]/).pop() : 'Unknown screen file';
+                const cameraFileName = data.cameraPath ? data.cameraPath.split(/[\\\/]/).pop() : 'Unknown camera file';
+                statusText.textContent = `⚠️ Dual recording timeline integration failed - see manual instructions`;
+                statusText.style.color = 'orange';
+
+                const timelineError = data.timelineResult ? data.timelineResult.error : 'Unknown error';
+                const screenLocation = data.filePath || 'Unknown screen location';
+                const cameraLocation = data.cameraPath || 'Unknown camera location';
+                alert(`⚠️ Dual recording completed but automatic timeline integration failed: ${timelineError}\n\nManual import required:\n\nScreen recording: ${screenLocation}\nCamera recording: ${cameraLocation}\n\nIn DaVinci Resolve, you can:\n1. Go to Media Pool\n2. Right-click and import media\n3. Navigate to the recordings folder\n4. Import both files\n5. Place screen recording on track 1\n6. Place camera recording on track 2\n7. Position camera as overlay in bottom-right corner`);
+            }
+        } else {
+            // Handle single recording completion
+            if (data.timelineResult && data.timelineResult.success) {
+                if (data.timelineResult.createdNewTimeline) {
+                    statusText.textContent = `✅ Recording added to new timeline: ${data.timelineResult.timelineName}`;
+                } else {
+                    statusText.textContent = `✅ Recording added to existing timeline: ${data.timelineResult.timelineName}`;
+                }
+                statusText.style.color = 'green';
+            } else {
+                // Timeline integration failed, show manual instructions
+                const fileName = data.filePath ? data.filePath.split(/[\\\/]/).pop() : 'Unknown file';
+                statusText.textContent = `⚠️ Timeline integration failed - see manual instructions`;
+                statusText.style.color = 'orange';
+
+                const timelineError = data.timelineResult ? data.timelineResult.error : 'Unknown error';
+                const fileLocation = data.filePath || 'Unknown location';
+                alert(`⚠️ Automatic timeline integration failed: ${timelineError}\n\nManual import required:\n\nFile location: ${fileLocation}\n\nIn DaVinci Resolve, you can:\n1. Go to Media Pool\n2. Right-click and import media\n3. Navigate to the recordings folder\n4. Select "${fileName}"\n5. Drag it to your timeline`);
+            }
         }
     } else {
         statusText.textContent = `Recording failed: ${data.error}`;
@@ -153,6 +185,19 @@ async function startRecording() {
             }
         } else {
             options.sourceType = 'desktop';
+        }
+
+        // Add dual recording option for any mode
+        if (recordDualMode.checked) {
+            const selectedDualCamera = cameraDualSelect.value;
+            if (selectedDualCamera) {
+                options.dualRecording = true;
+                options.dualCameraName = selectedDualCamera;
+                console.log(`Dual recording enabled: ${options.sourceType} + camera`);
+            } else {
+                statusText.textContent = 'Please select a camera for dual recording';
+                return;
+            }
         }
 
         // Add audio device option
@@ -211,20 +256,39 @@ function handleRegionChange() {
     switch (selectedRegion) {
         case 'window':
             windowSelectGroup.style.display = 'block';
-            // Don't rescan - just show cached sources
+            dualRecordingGroup.style.display = 'block';
             break;
         case 'camera':
             cameraSelectGroup.style.display = 'block';
-            // Don't rescan - just show cached sources
+            dualRecordingGroup.style.display = 'block';
             break;
         case 'selection':
             // Region selection would trigger a screen overlay
             statusText.textContent = 'Click Start Recording to select region';
+            dualRecordingGroup.style.display = 'block';
             break;
         default:
-            // Full desktop - no additional options needed
+            // Full desktop
+            dualRecordingGroup.style.display = 'block';
             break;
     }
+}
+
+// Handle dual mode checkbox change
+function handleDualModeChange() {
+    if (recordDualMode.checked) {
+        cameraDualGroup.style.display = 'block';
+        // Populate camera dropdown for dual recording
+        updateCameraDropdown();
+    } else {
+        cameraDualGroup.style.display = 'none';
+    }
+}
+
+// Update camera dropdown for dual recording
+function updateCameraDropdown() {
+    // Use the same camera options as the main camera select
+    cameraDualSelect.innerHTML = cameraSelect.innerHTML;
 }
 
 // Update source lists (windows and cameras)

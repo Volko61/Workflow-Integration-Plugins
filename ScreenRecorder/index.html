@@ -69,9 +69,15 @@
 
                 <div class="setting-group" id="dualRecordingGroup" style="display: none;">
                     <label>
-                        <input type="checkbox" id="recordScreenWithCamera">
-                        Record screen simultaneously (camera overlay in bottom-right)
+                        <input type="checkbox" id="recordDualMode">
+                        Dual recording mode (record primary source + camera simultaneously)
                     </label>
+                    <div class="setting-group" id="cameraDualGroup" style="display: none; margin-left: 20px;">
+                        <label for="cameraDualSelect">Select Camera:</label>
+                        <select id="cameraDualSelect">
+                            <option value="">Loading cameras...</option>
+                        </select>
+                    </div>
                 </div>
 
                 <div class="setting-group">
@@ -103,6 +109,9 @@
                 <li>Position the playhead where you want to insert the recording before stopping</li>
                 <li>Region selection opens an overlay where you can drag to select area</li>
                 <li>OBS Virtual Camera requires OBS to be running with Virtual Camera enabled</li>
+                <li>Dual Recording: Check "Dual recording mode" to record primary source + camera simultaneously on separate timeline tracks</li>
+                <li>Dual recording works with all modes: Desktop, Window, Selection, and Camera</li>
+                <li>In dual recording mode, audio is recorded with the primary source, camera is video-only</li>
                 <li>If automatic integration fails, manual import instructions will be provided</li>
             </ul>
 

@@ -32,6 +32,10 @@ let availableWindows = [];
 let availableCameras = [];
 let availableAudioDevices = [];
 
+// Dual recording state
+let dualRecordingPaths = null;
+let dualRecordingProcesses = null;
+
  const RECORDINGS_DIR = path.resolve(app.getPath('videos'), 'ResolveRecordings');
 
 
@@ -509,6 +513,112 @@ async function getScreenRegion() {
     });
 }
 
+// Start dual recording (primary source + camera with separate tracks)
+async function startDualRecording(options, cameraName, outputPath) {
+    try {
+        // Get audio device
+        const audioDevice = options.audioDevice || await getBestAudioDevice();
+
+        // Create separate output paths for primary source and camera
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const primaryPath = path.join(RECORDINGS_DIR, `${options.sourceType}-recording-${timestamp}.mp4`);
+        const cameraPath = path.join(RECORDINGS_DIR, `camera-recording-${timestamp}.mp4`);
+
+        debugLog(`Dual recording paths: Primary=${primaryPath}, Camera=${cameraPath}`);
+
+        // Store both paths for dual timeline integration
+        dualRecordingPaths = { primary: primaryPath, camera: cameraPath };
+
+        // Build primary source recording command based on source type
+        let primaryCommand = '';
+        switch (options.sourceType) {
+            case 'desktop':
+                primaryCommand = audioDevice
+                    ? `${getFFmpegPath()} -f gdigrab -framerate ${options.framerate || '30'} -i desktop -f dshow -i audio="${audioDevice}" -c:v libx264 -preset ultrafast -crf 22 -pix_fmt yuv420p -c:a aac -b:a 128k "${primaryPath}"`
+                    : `${getFFmpegPath()} -f gdigrab -framerate ${options.framerate || '30'} -i desktop -c:v libx264 -preset ultrafast -crf 22 -pix_fmt yuv420p "${primaryPath}"`;
+                break;
+            case 'window':
+                primaryCommand = audioDevice
+                    ? `${getFFmpegPath()} -f gdigrab -framerate ${options.framerate || '30'} -i title="${options.windowTitle}" -f dshow -i audio="${audioDevice}" -c:v libx264 -preset ultrafast -crf 22 -pix_fmt yuv420p -c:a aac -b:a 128k "${primaryPath}"`
+                    : `${getFFmpegPath()} -f gdigrab -framerate ${options.framerate || '30'} -i title="${options.windowTitle}" -c:v libx264 -preset ultrafast -crf 22 -pix_fmt yuv420p "${primaryPath}"`;
+                break;
+            case 'selection':
+                // Get region from options
+                if (options.region) {
+                    primaryCommand = audioDevice
+                        ? `${getFFmpegPath()} -f gdigrab -video_size ${options.region.width}x${options.region.height} -framerate ${options.framerate || '30'} -offset_x ${options.region.x} -offset_y ${options.region.y} -i desktop -f dshow -i audio="${audioDevice}" -c:v libx264 -preset ultrafast -crf 22 -pix_fmt yuv420p -c:a aac -b:a 128k "${primaryPath}"`
+                        : `${getFFmpegPath()} -f gdigrab -video_size ${options.region.width}x${options.region.height} -framerate ${options.framerate || '30'} -offset_x ${options.region.x} -offset_y ${options.region.y} -i desktop -c:v libx264 -preset ultrafast -crf 22 -pix_fmt yuv420p "${primaryPath}"`;
+                } else {
+                    throw new Error('No region specified for selection recording');
+                }
+                break;
+            default:
+                throw new Error(`Unknown source type for dual recording: ${options.sourceType}`);
+        }
+
+        // Build camera recording command (camera only, no audio to avoid duplication)
+        const cameraCommand = `${getFFmpegPath()} -f dshow -framerate 30 -i video="${cameraName}" -c:v libx264 -preset ultrafast -crf 22 -pix_fmt yuv420p "${cameraPath}"`;
+
+        debugLog(`Primary recording command: ${primaryCommand}`);
+        debugLog(`Camera recording command: ${cameraCommand}`);
+
+        // Start both recording processes
+        const primaryProcess = spawn(primaryCommand, [], { shell: true });
+        const cameraProcess = spawn(cameraCommand, [], { shell: true });
+
+        // Store processes for proper cleanup
+        dualRecordingProcesses = { primary: primaryProcess, camera: cameraProcess };
+
+        // Set recording state
+        isRecording = true;
+        currentRecordingPath = primaryPath; // Primary path for status
+        originalRecordingPath = primaryPath;
+
+        debugLog('Dual recording started successfully');
+
+        // Set up event handlers for both processes
+        let primaryClosed = false;
+        let cameraClosed = false;
+
+        const handleDualCompletion = () => {
+            if (primaryClosed && cameraClosed) {
+                debugLog('Both dual recording processes completed');
+                handleDualRecordingCompletion(primaryPath, cameraPath);
+            }
+        };
+
+        primaryProcess.on('close', (code, signal) => {
+            debugLog(`Primary recording process closed with code: ${code}, signal: ${signal}`);
+            primaryClosed = true;
+            handleDualCompletion();
+        });
+
+        cameraProcess.on('close', (code, signal) => {
+            debugLog(`Camera recording process closed with code: ${code}, signal: ${signal}`);
+            cameraClosed = true;
+            handleDualCompletion();
+        });
+
+        primaryProcess.on('error', (error) => {
+            debugLog(`Primary recording process error: ${error.message}`);
+            primaryClosed = true;
+            handleDualCompletion();
+        });
+
+        cameraProcess.on('error', (error) => {
+            debugLog(`Camera recording process error: ${error.message}`);
+            cameraClosed = true;
+            handleDualCompletion();
+        });
+
+        return { success: true, outputPath: primaryPath };
+
+    } catch (error) {
+        debugLog(`Dual recording failed: ${error.message}`);
+        return { success: false, error: error.message };
+    }
+}
+
 // Start screen recording
 async function startRecording(event, options) {
     if (isRecording) {
@@ -547,7 +657,17 @@ async function startRecording(event, options) {
     let cleanCameraName = '';
 
     // Configure input source based on region selection and source type
-    if (options.sourceType === 'camera') {
+    if (options.dualRecording) {
+        // DUAL RECORDING: Primary source + Camera (works for any source type)
+        debugLog(`Starting dual recording: ${options.sourceType} + camera`);
+
+        // Clean dual camera name
+        cleanCameraName = options.dualCameraName.replace(/[\[\]]/g, '').trim();
+        debugLog(`Dual recording camera: ${cleanCameraName}`);
+
+        // Create dual recording with camera overlay
+        return startDualRecording(options, cleanCameraName, outputPath);
+    } else if (options.sourceType === 'camera') {
         // Clean camera name and remove any brackets or extra characters
         cleanCameraName = options.cameraName.replace(/[\[\]]/g, '').trim();
         debugLog(`Original camera name: "${options.cameraName}"`);
@@ -1099,14 +1219,148 @@ async function startRecording(event, options) {
     }
 }
 
+// Handle dual recording completion
+async function handleDualRecordingCompletion(primaryPath, cameraPath) {
+    try {
+        debugLog(`Handling dual recording completion: Primary=${primaryPath}, Camera=${cameraPath}`);
+
+        // Reset recording state
+        isRecording = false;
+        recordingProcess = null;
+        dualRecordingProcesses = null;
+        dualRecordingPaths = null;
+
+        // Add both recordings to timeline on separate tracks
+        const result = await addDualRecordingToTimeline(primaryPath, cameraPath);
+
+        if (mainWindow) {
+            mainWindow.webContents.send('recording:completed', {
+                success: true,
+                filePath: primaryPath,
+                dualRecording: true,
+                cameraPath: cameraPath,
+                timelineResult: result
+            });
+        }
+
+    } catch (error) {
+        debugLog(`Error handling dual recording completion: ${error.message}`);
+        if (mainWindow) {
+            mainWindow.webContents.send('recording:completed', {
+                success: false,
+                error: `Timeline integration failed: ${error.message}`,
+                dualRecording: true,
+                filePath: primaryPath,
+                cameraPath: cameraPath
+            });
+        }
+    }
+}
+
+// Add dual recording to timeline (separate tracks)
+async function addDualRecordingToTimeline(primaryPath, cameraPath) {
+    try {
+        debugLog(`Adding dual recording to timeline: Primary=${primaryPath}, Camera=${cameraPath}`);
+
+        // Add primary recording to timeline first
+        const primaryResult = await addRecordingToTimeline(null, primaryPath);
+        debugLog(`Primary recording timeline result:`, primaryResult);
+
+        // Add camera recording to timeline
+        const cameraResult = await addRecordingToTimeline(null, cameraPath);
+        debugLog(`Camera recording timeline result:`, cameraResult);
+
+        return {
+            success: primaryResult.success && cameraResult.success,
+            primaryPath,
+            cameraPath,
+            primaryResult,
+            cameraResult,
+            dualRecording: true
+        };
+
+    } catch (error) {
+        debugLog(`Dual recording timeline integration failed: ${error.message}`);
+        return {
+            success: false,
+            error: error.message,
+            primaryPath,
+            cameraPath
+        };
+    }
+}
+
+// Stop dual recording
+async function stopDualRecording() {
+    try {
+        if (!dualRecordingProcesses) {
+            throw new Error('No dual recording processes found');
+        }
+
+        debugLog('Stopping dual recording: primary and camera processes');
+
+        // Stop both processes
+        const { primary: primaryProcess, camera: cameraProcess } = dualRecordingProcesses;
+
+        // Stop primary process
+        if (primaryProcess && !primaryProcess.killed) {
+            debugLog(`Stopping primary recording process. PID: ${primaryProcess.pid}`);
+            try {
+                primaryProcess.stdin.write('q');
+            } catch (error) {
+                debugLog(`Failed to send 'q' to primary process: ${error.message}`);
+            }
+        }
+
+        // Stop camera process
+        if (cameraProcess && !cameraProcess.killed) {
+            debugLog(`Stopping camera recording process. PID: ${cameraProcess.pid}`);
+            try {
+                cameraProcess.stdin.write('q');
+            } catch (error) {
+                debugLog(`Failed to send 'q' to camera process: ${error.message}`);
+            }
+        }
+
+        // Set timeout for force termination if graceful doesn't work
+        setTimeout(() => {
+            if (primaryProcess && !primaryProcess.killed) {
+                debugLog('Force killing primary process');
+                primaryProcess.kill('SIGTERM');
+            }
+            if (cameraProcess && !cameraProcess.killed) {
+                debugLog('Force killing camera process');
+                cameraProcess.kill('SIGTERM');
+            }
+        }, 3000);
+
+        return { success: true };
+
+    } catch (error) {
+        debugLog(`Failed to stop dual recording: ${error.message}`);
+        return { success: false, error: error.message };
+    }
+}
+
 // Stop screen recording
 async function stopRecording(event) {
-    if (!isRecording || !recordingProcess) {
+    if (!isRecording) {
         debugLog('No recording in progress');
         return { success: false, error: 'No recording in progress' };
     }
 
     try {
+        // Handle dual recording stopping
+        if (dualRecordingProcesses) {
+            debugLog('Stopping dual recording processes');
+            return stopDualRecording();
+        }
+
+        if (!recordingProcess) {
+            debugLog('No single recording process found');
+            return { success: false, error: 'No recording process found' };
+        }
+
         debugLog(`Attempting to stop recording process. PID: ${recordingProcess.pid}, Killed: ${recordingProcess.killed}`);
 
         // Check if this is a shell process by examining spawnargs or other properties
