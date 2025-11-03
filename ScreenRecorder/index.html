@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';">
+    <title>Screen Recorder for DaVinci Resolve</title>
+    <script type="text/javascript" src="./renderer.js"></script>
+    <link rel="stylesheet" type="text/css" href="./css/styles.css" />
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>Screen Recorder for DaVinci Resolve</h1>
+            <p>Record your screen and automatically add recordings to your timeline</p>
+        </header>
+
+        <div class="status-section">
+            <div id="status" class="status">Ready to record</div>
+            <div id="ffmpegStatus" class="ffmpeg-status">FFmpeg: Checking...</div>
+        </div>
+
+        <section class="recording-controls">
+            <h2>Recording Settings</h2>
+
+            <div class="settings-grid">
+                <div class="setting-group">
+                    <label for="framerate">Frame Rate:</label>
+                    <select id="framerate">
+                        <option value="24">24 fps</option>
+                        <option value="30" selected>30 fps</option>
+                        <option value="60">60 fps</option>
+                    </select>
+                </div>
+
+                <div class="setting-group">
+                    <label for="resolution">Resolution:</label>
+                    <select id="resolution">
+                        <option value="1920x1080" selected>1920x1080 (Full HD)</option>
+                        <option value="1280x720">1280x720 (HD)</option>
+                        <option value="3840x2160">3840x2160 (4K)</option>
+                        <option value="desktop">Desktop Resolution</option>
+                    </select>
+                </div>
+
+                <div class="setting-group">
+                    <label for="region">Recording Region:</label>
+                    <select id="region">
+                        <option value="desktop" selected>Full Desktop</option>
+                        <option value="selection" id="selectionOption">Select Region</option>
+                        <option value="window">Specific Window</option>
+                        <option value="camera">Camera / OBS Virtual</option>
+                    </select>
+                </div>
+
+                <div class="setting-group" id="windowSelectGroup" style="display: none;">
+                    <label for="windowSelect">Select Window:</label>
+                    <select id="windowSelect">
+                        <option value="">Loading windows...</option>
+                    </select>
+                </div>
+
+                <div class="setting-group" id="cameraSelectGroup" style="display: none;">
+                    <label for="cameraSelect">Select Camera:</label>
+                    <select id="cameraSelect">
+                        <option value="">Loading cameras...</option>
+                    </select>
+                </div>
+
+                <div class="setting-group">
+                    <label for="audioSelect">Audio Device:</label>
+                    <select id="audioSelect">
+                        <option value="">Loading audio devices...</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="control-buttons">
+                <button id="startBtn" class="btn btn-start">Start Recording</button>
+                <button id="stopBtn" class="btn btn-stop" disabled>Stop Recording & Add to Timeline</button>
+                <button id="refreshBtn" class="btn btn-refresh">Refresh Sources</button>
+            </div>
+        </section>
+
+        <section class="help-section">
+            <h2>Help</h2>
+            <ul>
+                <li>Ensure FFmpeg is installed and added to your system PATH</li>
+                <li>Configure recording settings before starting</li>
+                <li>Select source: Desktop, Region, Window, or Camera/OBS Virtual Camera</li>
+                <li>Click "Start Recording" to begin screen capture</li>
+                <li>Click "Stop Recording & Add to Timeline" when finished</li>
+                <li>Recording will be automatically added to your DaVinci Resolve timeline</li>
+                <li>If a timeline exists: Recording will be added at the cursor (playhead) position</li>
+                <li>If no timeline exists: A new timeline will be created with your recording</li>
+                <li>Position the playhead where you want to insert the recording before stopping</li>
+                <li>Region selection opens an overlay where you can drag to select area</li>
+                <li>OBS Virtual Camera requires OBS to be running with Virtual Camera enabled</li>
+                <li>If automatic integration fails, manual import instructions will be provided</li>
+            </ul>
+
+            <h3>Global Shortcuts (work even when app is not focused)</h3>
+            <ul>
+                <li><strong>Ctrl+Shift+R</strong>: Start recording</li>
+                <li><strong>Ctrl+Shift+S</strong>: Stop recording</li>
+                <li><strong>Ctrl+Shift+Space</strong>: Toggle recording (start/stop)</li>
+                <li>Shortcuts can be disabled if they conflict with other applications</li>
+            </ul>
+        </section>
+    </div>
+</body>
+</html>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<BlackmagicDesign>
+    <Plugin>
+        <Id>com.blackmagicdesign.resolve.screenrecorder</Id>
+        <Name>Screen Recorder</Name>
+        <Version>1.0</Version>
+        <Description>Screen recording plugin for DaVinci Resolve with automatic timeline integration</Description>
+        <FilePath>main.js</FilePath>
+    </Plugin>
+</BlackmagicDesign>
