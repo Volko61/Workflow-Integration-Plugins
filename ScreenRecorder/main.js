@@ -158,7 +158,12 @@ async function getAvailableAudioDevices() {
                 const lines = output.split('\n');
 
                 let inAudioDevices = false;
-                for (const line of lines) {
+                let currentDevice = null;
+                let lookingForAltName = false;
+
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i];
+
                     if (line.includes('[dshow @')) {
                         // Check if this line indicates audio devices section
                         if (line.includes('DirectShow audio devices')) {
@@ -167,22 +172,48 @@ async function getAvailableAudioDevices() {
                             inAudioDevices = false;
                         } else if (line.includes('(audio)')) {
                             // Line contains an audio device directly
-                            const match = line.match(/"([^"]+)"/);
-                            if (match) {
-                                audioDevices.push({
-                                    name: match[1],
-                                    isDefault: match[1].toLowerCase().includes('microphone') || match[1].toLowerCase().includes('réseau')
-                                });
+                            const nameMatch = line.match(/"([^"]+)"\s*\(audio\)/);
+
+                            if (nameMatch) {
+                                // Look for alternative name in the next line
+                                let altName = null;
+                                if (i + 1 < lines.length && lines[i + 1].includes('Alternative name')) {
+                                    const altMatch = lines[i + 1].match(/Alternative name "([^"]+)"/);
+                                    if (altMatch) {
+                                        altName = altMatch[1];
+                                    }
+                                }
+
+                                currentDevice = {
+                                    name: nameMatch[1],
+                                    altName: altName,
+                                    isDefault: nameMatch[1].toLowerCase().includes('microphone') || nameMatch[1].toLowerCase().includes('réseau')
+                                };
+                                audioDevices.push(currentDevice);
+                                currentDevice = null;
                             }
                         }
                     } else if (inAudioDevices && line.includes('"')) {
                         // Parse audio devices in the section
-                        const match = line.match(/"([^"]+)"/);
-                        if (match) {
-                            audioDevices.push({
-                                name: match[1],
-                                isDefault: match[1].toLowerCase().includes('microphone') || match[1].toLowerCase().includes('réseau')
-                            });
+                        const nameMatch = line.match(/"([^"]+)"/);
+
+                        if (nameMatch) {
+                            // Look for alternative name in the next line
+                            let altName = null;
+                            if (i + 1 < lines.length && lines[i + 1].includes('Alternative name')) {
+                                const altMatch = lines[i + 1].match(/Alternative name "([^"]+)"/);
+                                if (altMatch) {
+                                    altName = altMatch[1];
+                                }
+                            }
+
+                            currentDevice = {
+                                name: nameMatch[1],
+                                altName: altName,
+                                isDefault: nameMatch[1].toLowerCase().includes('microphone') || nameMatch[1].toLowerCase().includes('réseau')
+                            };
+                            audioDevices.push(currentDevice);
+                            currentDevice = null;
                         }
                     }
                 }
@@ -220,10 +251,29 @@ async function getBestAudioDevice() {
             debugLog(`Using preferred audio device: ${preferredDevice.name}`);
         }
 
-        return preferredDevice.name;
+        // Return the most reliable name (alternative if available, otherwise the display name)
+        return preferredDevice.altName || preferredDevice.name;
     } catch (error) {
         debugLog(`Error getting audio device: ${error.message}`);
         return null;
+    }
+}
+
+// Get the correct audio device name (with fallback to alternative name)
+async function getCorrectAudioDeviceName(displayName) {
+    try {
+        const devices = await getAvailableAudioDevices();
+        const deviceInfo = devices.find(device => device.name === displayName);
+
+        if (deviceInfo && deviceInfo.altName) {
+            debugLog(`Using alternative device name for "${displayName}": ${deviceInfo.altName}`);
+            return deviceInfo.altName;
+        }
+
+        return displayName;
+    } catch (error) {
+        debugLog(`Error getting correct audio device name: ${error.message}`);
+        return displayName;
     }
 }
 
@@ -570,35 +620,77 @@ async function startRecording(event, options) {
     let audioInputAdded = false;
     if (options.audioDevice && options.sourceType !== 'camera') { // Don't add audio for cameras here - they have their own audio logic
         debugLog(`Adding audio device: ${options.audioDevice}`);
-        // Rebuild args array with audio first for dshow compatibility
-        const videoArgs = [...args]; // Copy original video args
-        args = [
-            '-f', 'dshow',
-            '-i', `audio="${options.audioDevice}"`,
-            ...videoArgs // Add video args after audio
-        ];
+
+        // Try the display name first (it works better with shell execution)
+        const audioDeviceName = options.audioDevice;
+
+        // Build shell command for audio compatibility (spawn has issues with complex device names)
+        const shellCommand = `${getFFmpegPath()} -f dshow -i audio="${audioDeviceName}" ${args.join(' ')} -c:v libx264 -preset ultrafast -crf 22 -pix_fmt yuv420p -c:a aac -b:a 128k "${outputPath}"`;
+
+        debugLog(`Using shell execution for audio recording: ${shellCommand}`);
+        recordingProcess = spawn(shellCommand, [], { shell: true });
+
+        // Set recording state to true for shell execution
+        isRecording = true;
+        currentRecordingPath = outputPath;
+        originalRecordingPath = outputPath;
+
         audioInputAdded = true;
-        debugLog('Audio input added before video input for dshow compatibility');
+        debugLog('Audio recording started with shell execution for compatibility');
+
+        // Set up event handlers for shell-based recording
+        recordingProcess.on('close', (code, signal) => {
+            debugLog(`Recording process closed with code: ${code}, signal: ${signal}`);
+
+            // Reset state if process was manually stopped or failed
+            const wasManuallyStopped = signal === 'SIGTERM' || signal === 'SIGKILL' ||
+                                    (signal === null && code !== 0 && code !== null) ||
+                                    (signal === null && code === 1); // Windows often uses exit code 1 for terminated processes
+
+            if (wasManuallyStopped) {
+                debugLog(`Recording was manually stopped or failed. Code: ${code}, Signal: ${signal}`);
+                isRecording = false;
+                recordingProcess = null;
+                currentRecordingPath = null;
+
+                if (mainWindow) {
+                    addRecordingToTimeline(null, outputPath).then(result => {
+                        mainWindow.webContents.send('recording:completed', {
+                            success: true,
+                            filePath: outputPath,
+                            timelineResult: result
+                        });
+                    });
+                }
+            } else {
+                // Recording completed normally or failed
+                isRecording = false;
+                recordingProcess = null;
+                currentRecordingPath = null;
+
+                if (mainWindow) {
+                    addRecordingToTimeline(null, outputPath).then(result => {
+                        mainWindow.webContents.send('recording:completed', {
+                            success: true,
+                            filePath: outputPath,
+                            timelineResult: result
+                        });
+                    });
+                }
+            }
+        });
+
+        recordingProcess.stderr.on('data', (data) => {
+            const output = data.toString().trim();
+            if (output && !output.includes('frame=') && !output.includes('size=') && !output.includes('time=') && !output.includes('bitrate=') && !output.includes('speed=')) {
+                debugLog(`FFmpeg stderr: ${output}`);
+            }
+        });
+
+        // Return early since we're handling everything with shell execution
+        return { success: true, outputPath };
     }
 
-    // Add audio device if specified (must come before video for dshow)
-    let audioInputAdded = false;
-    if (options.audioDevice) {
-        debugLog(`Adding audio device: ${options.audioDevice}`);
-        // Rebuild args array with audio first for dshow compatibility
-        args = [
-            '-f', 'dshow',
-            '-i', `audio="${options.audioDevice}"`,
-            // Then add video input
-            '-f', args[0], // Use the original video format (gdigrab)
-            args[1], // framerate
-            args[2], // framerate value
-            args[3], // -i
-            args[4]  // input source (desktop, title=..., etc.)
-        ];
-        audioInputAdded = true;
-        debugLog('Audio input added before video input for dshow compatibility');
-    }
 
     // Add video encoding options
     args.push('-c:v', 'libx264');
@@ -644,11 +736,13 @@ async function startRecording(event, options) {
             if (cleanCameraName.toLowerCase().includes('obs virtual')) {
                 // OBS Virtual Camera: use native framerate and allow scaling to desired resolution
                 // Use the selected audio device if provided, otherwise try to get the best one
-                const audioDevice = options.audioDevice || await getBestAudioDevice();
+                let audioDevice = options.audioDevice || await getBestAudioDevice();
                 let cameraCommand;
                 if (audioDevice) {
+                    // Get the correct device name (with fallback to alternative name)
+                    audioDevice = await getCorrectAudioDeviceName(audioDevice);
                     // Include both video and audio
-                    cameraCommand = `${getFFmpegPath()} -f dshow -framerate 60 -i video="${cleanCameraName}" -f dshow -i audio="${audioDevice}" -c:v libx264 -preset ultrafast -crf 22 -pix_fmt yuv420p -c:a aac -b:a 128k -flush_packets 1 -vf scale=${options.resolution || '1920x1080'} "${outputPath}"`;
+                    cameraCommand = `${getFFmpegPath()} -f dshow -framerate 60 -i video="${cleanCameraName}" -f dshow -i audio="${audioDevice.replace(/\\/g, '\\\\')}" -c:v libx264 -preset ultrafast -crf 22 -pix_fmt yuv420p -c:a aac -b:a 128k -flush_packets 1 -vf scale=${options.resolution || '1920x1080'} "${outputPath}"`;
                     debugLog(`OBS Virtual Camera with audio (${audioDevice}): ${cameraCommand}`);
                 } else {
                     // Video only if no audio device found
@@ -670,11 +764,11 @@ async function startRecording(event, options) {
                         debugLog(`Adding audio device (${audioDevice}) to regular camera recording`);
                         fallbackCommands.push(
                             // Approach 1: Request 1920x1080 input with audio
-                            `${getFFmpegPath()} -f dshow -framerate ${options.framerate || '30'} -video_size 1920x1080 -i video="${cleanCameraName}" -f dshow -i audio="${audioDevice}" -c:v libx264 -preset ultrafast -crf 22 -pix_fmt yuv420p -c:a aac -b:a 128k -flush_packets 1 ${targetResolution !== '1920x1080' ? `-vf scale=${targetResolution}` : ''} "${outputPath}"`,
+                            `${getFFmpegPath()} -f dshow -framerate ${options.framerate || '30'} -video_size 1920x1080 -i video="${cleanCameraName}" -f dshow -i audio="${audioDevice.replace(/\\/g, '\\\\')}" -c:v libx264 -preset ultrafast -crf 22 -pix_fmt yuv420p -c:a aac -b:a 128k -flush_packets 1 ${targetResolution !== '1920x1080' ? `-vf scale=${targetResolution}` : ''} "${outputPath}"`,
                             // Fallback 1: No video_size specified with audio
-                            `${getFFmpegPath()} -f dshow -framerate ${options.framerate || '30'} -i video="${cleanCameraName}" -f dshow -i audio="${audioDevice}" -c:v libx264 -preset ultrafast -crf 22 -pix_fmt yuv420p -c:a aac -b:a 128k -flush_packets 1 ${targetResolution !== '1920x1080' ? `-vf scale=${targetResolution}` : ''} "${outputPath}"`,
+                            `${getFFmpegPath()} -f dshow -framerate ${options.framerate || '30'} -i video="${cleanCameraName}" -f dshow -i audio="${audioDevice.replace(/\\/g, '\\\\')}" -c:v libx264 -preset ultrafast -crf 22 -pix_fmt yuv420p -c:a aac -b:a 128k -flush_packets 1 ${targetResolution !== '1920x1080' ? `-vf scale=${targetResolution}` : ''} "${outputPath}"`,
                             // Fallback 2: Use 1280x720 input with audio
-                            `${getFFmpegPath()} -f dshow -framerate ${options.framerate || '30'} -video_size 1280x720 -i video="${cleanCameraName}" -f dshow -i audio="${audioDevice}" -c:v libx264 -preset ultrafast -crf 22 -pix_fmt yuv420p -c:a aac -b:a 128k -flush_packets 1 -vf scale=${targetResolution} "${outputPath}"`
+                            `${getFFmpegPath()} -f dshow -framerate ${options.framerate || '30'} -video_size 1280x720 -i video="${cleanCameraName}" -f dshow -i audio="${audioDevice.replace(/\\/g, '\\\\')}" -c:v libx264 -preset ultrafast -crf 22 -pix_fmt yuv420p -c:a aac -b:a 128k -flush_packets 1 -vf scale=${targetResolution} "${outputPath}"`
                         );
                     } else {
                         // Commands without audio (fallback)
